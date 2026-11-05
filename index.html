@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LD_DEBUG Dynamic Linker Log Visualizer</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Drag and Drop Overlay -->
+  <div id="drop-zone" class="drop-zone-overlay">
+    <div class="drop-zone-box">
+      <span>📂 Drop ld.so log file here</span>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header class="app-header">
+    <div class="brand-section">
+      <h1 class="brand-title">
+        <span>ld_debug_viewer</span>
+        <span class="badge-cli">glibc ld.so</span>
+      </h1>
+      <span class="brand-subtitle" id="current-file-label">Ready</span>
+    </div>
+
+    <div class="header-actions">
+      <input type="file" id="file-input" class="file-input-hidden" accept=".log,.txt,.*">
+      <button type="button" class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+        <span>Upload Log</span>
+      </button>
+
+      <button type="button" class="btn btn-secondary" id="btn-load-sample" title="Load sample ldlog.4430">
+        <span>Load Sample (ldlog.4430)</span>
+      </button>
+
+      <button type="button" class="btn btn-secondary" id="help-btn" title="How to generate logs">
+        <span>How to Run</span>
+      </button>
+
+      <button type="button" class="btn-icon" id="theme-toggle" title="Toggle theme">
+        <span id="theme-icon">☀</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- KPI Metrics Bar -->
+  <section class="kpi-bar">
+    <div class="kpi-card" title="Relocations: Total symbol relocations performed by ld.so at load time to connect code and data addresses between binaries and shared objects.">
+      <span class="kpi-title">Relocations <span class="kpi-info-icon" title="Total symbol relocations performed by ld.so">ℹ</span></span>
+      <span class="kpi-val" id="kpi-relocs">0</span>
+    </div>
+
+    <div class="kpi-card" title="Unique Symbols: Number of distinct function and variable names resolved across all loaded libraries.">
+      <span class="kpi-title">Unique Symbols <span class="kpi-info-icon" title="Distinct function and variable symbols resolved">ℹ</span></span>
+      <span class="kpi-val" id="kpi-symbols">0</span>
+    </div>
+
+    <div class="kpi-card" title="Loaded DSOs: Total Dynamic Shared Objects (.so libraries and main binary) mapped into the virtual address space.">
+      <span class="kpi-title">Loaded DSOs <span class="kpi-info-icon" title="Shared libraries and executables in address space">ℹ</span></span>
+      <span class="kpi-val" id="kpi-libs">0</span>
+    </div>
+
+    <div class="kpi-card" title="Loader Startup Time: Total CPU clock cycles consumed by ld.so before passing execution to the program's main() entry point.">
+      <span class="kpi-title">Loader Startup Time <span class="kpi-info-icon" title="Total CPU clock cycles spent in ld.so">ℹ</span></span>
+      <span class="kpi-val" id="kpi-cycles">—</span>
+    </div>
+
+    <div class="kpi-card" title="Relocation Overhead: CPU cycles and percentage of loader startup time spent resolving symbols and applying relocation patches.">
+      <span class="kpi-title">Relocation Overhead <span class="kpi-info-icon" title="Time spent resolving symbols and updating pointers">ℹ</span></span>
+      <span class="kpi-val" id="kpi-reloc-time">—</span>
+    </div>
+
+    <div class="kpi-card" title="Unused DSOs: Libraries loaded via DT_NEEDED whose exported symbols were never referenced during execution. Eliminating unused direct dependencies reduces startup latency.">
+      <span class="kpi-title">Unused DSOs <span class="kpi-info-icon" title="Direct library dependencies loaded but never referenced">ℹ</span></span>
+      <div class="kpi-val">
+        <span id="kpi-unused">0</span>
+        <span class="kpi-badge kpi-badge-success" id="kpi-unused-badge">Clean</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- App Navigation Tabs -->
+  <nav class="app-nav">
+    <button type="button" class="nav-tab is-active" data-tab="tab-graph" title="Visualize library DT_NEEDED hierarchy and runtime symbol flows">Dependency Graph</button>
+    <button type="button" class="nav-tab" data-tab="tab-table" title="Filterable table of all symbol resolutions, relocation types, and lookup scope search chains">Symbol Bindings & Relocations</button>
+    <button type="button" class="nav-tab" data-tab="tab-overview" title="Dynamic linker startup performance statistics, memory link map, and init constructor order">Link Map & Statistics</button>
+    <button type="button" class="nav-tab" data-tab="tab-raw" title="Search and inspect raw ld.so debug output lines">Raw Log</button>
+  </nav>
+
+  <!-- Main Workspace -->
+  <main class="app-main">
+
+    <!-- Tab 1: Dependency Graph -->
+    <section class="tab-panel is-active" id="tab-graph">
+      <div class="graph-view-header">
+        <div class="graph-header-left">
+          <!-- Data Mode -->
+          <div class="graph-toggle-group">
+            <button type="button" class="toggle-btn btn-active" id="graph-mode-deps" title="Show ELF DT_NEEDED dynamic dependency graph between shared objects">DSO Dependencies (Needed)</button>
+            <button type="button" class="toggle-btn" id="graph-mode-symbols" title="Show actual runtime symbol bindings directed towards provider libraries, weighted by binding count">Symbol Binding Flows</button>
+          </div>
+
+          <!-- Drawing Layout: Layered vs Force -->
+          <div class="graph-toggle-group">
+            <button type="button" class="toggle-btn btn-active" id="layout-mode-layered" title="Hierarchical Sugiyama layout: main executable at root, dependencies ranked in downward levels">Layered Graph</button>
+            <button type="button" class="toggle-btn" id="layout-mode-force" title="Physics-based force-directed layout where nodes repel and edges act as springs">Force Network</button>
+          </div>
+        </div>
+
+        <div class="graph-header-right">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-graph-fit" title="Zoom and center the entire graph in the viewport">Fit to Screen</button>
+        </div>
+      </div>
+
+      <div class="graph-container" id="dependency-graph-container">
+        <!-- SVG Canvas rendered by js/graph.js -->
+      </div>
+    </section>
+
+    <!-- Tab 2: Symbol Bindings Table -->
+    <section class="tab-panel" id="tab-table">
+      <div id="bindings-table-container">
+        <!-- Table and dual filters rendered by js/table.js -->
+      </div>
+    </section>
+
+    <!-- Tab 3: Link Map & Statistics Overview -->
+    <section class="tab-panel" id="tab-overview">
+      <div class="overview-layout">
+
+        <!-- Unused DSOs Alert -->
+        <div id="unused-alert-section" style="display: none;"></div>
+
+        <div class="overview-grid">
+          <!-- Runtime Linker Statistics -->
+          <div class="panel-card">
+            <h2 class="card-title">
+              ⏱ Dynamic Linker Performance Statistics
+              <span class="term-help-icon" title="CPU clock cycle measurements and relocation counts from LD_DEBUG=statistics">ℹ</span>
+            </h2>
+            <table class="stats-table">
+              <tbody id="stats-table-body">
+                <!-- Injected via app.js -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Initializers Execution Sequence -->
+          <div class="panel-card">
+            <h2 class="card-title">
+              🚀 Initializers Execution Order (Init Array)
+              <span class="term-help-icon" title="Sequence in which shared object DT_INIT and DT_INIT_ARRAY constructor routines are executed before main() starts">ℹ</span>
+            </h2>
+            <ul class="init-list" id="inits-list">
+              <!-- Injected via app.js -->
+            </ul>
+          </div>
+        </div>
+
+        <!-- Link Map / Address Space Table -->
+        <div class="panel-card">
+          <h2 class="card-title">
+            🗺 DSO Link Map & Memory Layout
+            <span class="term-help-icon" title="Virtual memory layout generated by ld.so showing base addresses, segment sizes, and entry points">ℹ</span>
+          </h2>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th title="Object: Canonical shared library name (SONAME) or main executable">
+                    Object <span class="th-info-icon" title="Canonical SONAME or executable name">ℹ</span>
+                  </th>
+                  <th title="Resolved Path: Real filesystem path on disk where the dynamic linker located and loaded the ELF file">
+                    Resolved Path <span class="th-info-icon" title="Real filesystem path of the loaded ELF file">ℹ</span>
+                  </th>
+                  <th title="Base Address: Starting virtual memory address where the ELF file's loadable segments are mapped (randomized by ASLR)">
+                    Base Address <span class="th-info-icon" title="Virtual memory starting address (ASLR)">ℹ</span>
+                  </th>
+                  <th title="Size: Total virtual memory address space spanned by this object's loaded segments">
+                    Size <span class="th-info-icon" title="Total memory footprint of loaded segments">ℹ</span>
+                  </th>
+                  <th title="Dynamic Addr: Virtual address of the ELF _DYNAMIC segment containing linker tags (DT_NEEDED, DT_INIT, etc.)">
+                    Dynamic Addr <span class="th-info-icon" title="Address of ELF _DYNAMIC section">ℹ</span>
+                  </th>
+                  <th title="Entry Point: Virtual memory address of the program entry point or initialization routine">
+                    Entry Point <span class="th-info-icon" title="Address of ELF entry point or init handler">ℹ</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="linkmap-table-body">
+                <!-- Injected via app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Tab 4: Raw Log Viewer -->
+    <section class="tab-panel" id="tab-raw">
+      <div class="raw-log-toolbar">
+        <input type="text" id="raw-log-search" class="raw-log-search-input" placeholder="Search in raw log lines..." title="Search across all lines in the raw dynamic linker log file" />
+        <span class="text-muted" style="font-size: 0.8rem;">Click any line to copy or inspect</span>
+      </div>
+      <div id="raw-log-notice" class="raw-log-notice" style="display: none;"></div>
+      <div class="raw-log-viewer" id="raw-log-content">
+        <!-- Rendered by app.js -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Help / How to Run Modal -->
+  <div class="modal-overlay" id="help-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Generating Dynamic Linker Logs</h3>
+        <button type="button" class="btn-icon" id="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <p>To generate comprehensive logs compatible with this tool, run your target application with the following command on Linux:</p>
+
+        <div class="cmd-box" id="cmd-text">LD_DEBUG=all,unused,statistics LD_DEBUG_OUTPUT=~/my_stats_log ./my_application</div>
+
+        <div>
+          <strong>Environment Variables Explained:</strong>
+          <ul style="margin-left: 1.25rem; margin-top: 0.4rem; line-height: 1.6;">
+            <li><code>LD_DEBUG=all</code>: Traces symbol resolution, bindings, file lookups, link maps, and scopes.</li>
+            <li><code>unused</code>: Flags any loaded libraries (DSOs) whose symbols were never actually referenced.</li>
+            <li><code>statistics</code>: Outputs dynamic linker cycle counts and relocation timing breakdown.</li>
+            <li><code>LD_DEBUG_OUTPUT=...</code>: Redirects diagnostics to <code>&lt;path&gt;.&lt;PID&gt;</code> instead of mixing with stderr.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-copy-cmd">Copy Command</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local Scripts (All vendored in repository, zero external CDNs) -->
+  <script src="js/parser.js"></script>
+  <script src="js/graph.js"></script>
+  <script src="js/table.js"></script>
+  <script src="js/sample.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
